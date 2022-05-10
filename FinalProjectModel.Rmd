@@ -1,0 +1,871 @@
+---
+title: "H515 Final Project"
+author: "Andrew Marion, Michael Black, Matthew Hays, Sanika Kotnis"
+date: "04/11/2022"
+output: pdf_document
+---
+
+# Read in Data
+```{r setup, include=FALSE}
+# activate required libraries
+library(dplyr)
+library(gbm)
+library(glmnet)
+library(gridExtra)
+library(leaflet)
+library(leaps)
+library(pls)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(tidyverse)
+library(tree)
+
+house_data <- read_csv("kc_house_data.csv")
+```
+
+# 1. Introduction
+
+Owning a home is a dream or goal that many people hope to achieve. Given the pandemic, many people have wanted to move out of cities and into the suburbs and buy a home. Buying a home can be an incredibly difficult process not knowing if the price is reasonable or if the house will have any problems in the future.
+
+The purpose of this project is to develop and compare models to find the best model to predict the housing price of a house sold in King County in Washington, USA. Having a model to predict the price of a house can be extremely useful for buyers and sellers as each wants to optimize the value of their purchase. For the buyer, knowing the predicted price for a house will allow them to know if they are overpaying or getting a good deal on an undervalued house. For the seller, knowing the predicted price will allow them to not over or undervalued the house. This will ensure they allow them to maximize their profits from selling the house. 
+
+
+# Data Exploration
+
+```{r}
+glimpse(house_data)
+```
+
+## Check for NA
+```{r, echo = TRUE}
+# check for missing data (Na's)
+sum(is.na(house_data))
+```
+No NA's in the dataset
+
+
+## Summary
+```{r}
+summary(house_data[,3:21])
+```
+
+##QQ Plot of Price with potential transformers
+```{r, fig.width = 20, fig.height = 10}
+qqnorm(house_data$price, pch = 1, frame = FALSE)
+qqline(house_data$price, col = "steelblue", lwd = 2)
+
+qqnorm(log(house_data$price), pch = 1, frame = FALSE)
+qqline(log(house_data$price), col = "steelblue", lwd = 2)
+
+qqnorm(sqrt(house_data$price), pch = 1, frame = FALSE)
+qqline(sqrt(house_data$price), col = "steelblue", lwd = 2)
+```
+
+## Price Distribution
+```{r, fig.width = 20, fig.height = 10}
+options(scipen = 100000000)
+plt_price <- ggplot(data = house_data, aes(x = price)) + 
+  geom_histogram(col = 'black') +
+  geom_vline(xintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  xlab('Price (US$)') + ylab('Frequency') +
+  scale_x_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', '1,000,000', '2,500,000', '5,000,000')) +
+  scale_y_continuous(breaks = c(seq(0, 3000, 500)),
+                     labels = c(seq(0, 3000, 500)),
+                     limits = c(0, 3000))
+
+plt_price
+```
+
+## Year vs # of houses built and mean price
+```{r, fig.width = 20, fig.height = 10}
+#number of houses built per year
+build_year <- house_data %>%
+  group_by(yr_built) %>%
+  summarise(rows = n())
+
+plt_build_year <- ggplot(data = build_year, aes(x = yr_built, y = rows)) +
+  geom_bar(stat = 'identity', col = 'black') +
+  xlab('Year') +
+  ylab('Houses Built') +
+  scale_x_continuous(breaks = c(seq(1900, 2015, 10)),
+                     labels = c(seq(1900, 2015, 10)),
+                     limits = c(1899, 2016)) +
+  scale_y_continuous(breaks = c(seq(0, 600, 50)),
+                     labels = c(seq(0, 600, 50)),
+                     limits = c(0, 600))
+
+plt_build_year
+```
+
+```{r, fig.width = 20, fig.height = 10}
+# mean price of house per year built
+build_year_price <- house_data %>%
+  group_by(yr_built) %>%
+  summarise(mean_price = mean(as.numeric(price))) %>%
+  arrange(yr_built)
+
+build_year_plt_price <- ggplot(data = build_year_price, 
+                               aes(x = yr_built, y = mean_price)) +
+  geom_bar(stat = 'identity', col = 'black') + 
+  xlab('Year') + 
+  ylab('Mean Price (US$)') + 
+  geom_hline(yintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  scale_x_continuous(breaks = c(seq(1900, 2015, 10)),
+                     labels = c(seq(1900, 2015, 10)),
+                     limits = c(1899, 2016)) +
+  scale_y_continuous(breaks = c(seq(100000, 800000, 100000)),
+                     labels = c('100,000', '200,000', '300,000',
+                                '400,000', '500,000', '600,000',
+                                '700,000', '800,000'))
+build_year_plt_price
+```
+
+```{r, fig.width = 20, fig.height = 10}
+# mean square footage of living area of surrounding 15 houses
+plt_closest15_living <- ggplot(data = house_data, aes(x = sqft_living15, 
+                                                 y = price)) +
+  geom_point(lwd = 1) +
+  xlab('Mean Square Footage of Living Area of Nearest 15 Houses') + 
+  ylab('Price (US$)') +
+  scale_x_continuous(trans = 'log',
+                     breaks = c(500, 1000, 2500, 5000),
+                     labels = c('500', '1,000', '2,500', '5,000')) +
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000')) 
+plt_closest15_living
+
+```
+
+```{r, fig.width = 20, fig.height = 10}
+# mean square footage of lot of surrounding 15 houses
+plt_closest15 <- ggplot(data = house_data, aes(x = sqft_lot15, 
+                                                 y = price)) +
+  geom_point(lwd = 1) +
+  xlab('Mean Square Footage of Lot of Nearest 15 Houses') + 
+  ylab('Price (US$)') + 
+  scale_x_continuous(trans = 'log',
+                     breaks = c(1000, 10000, 100000, 1000000),
+                     labels = c('1,000', '10,000', '100,000', 
+                                '1,000,000')) +
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000'))
+plt_closest15
+```
+
+## Boxplots
+
+### All boxplots
+```{r, fig.width = 20, fig.height = 10}
+require(ggplot2)
+boxplot(house_data[,3:21])
+
+```
+
+### House Price
+```{r, fig.width = 20, fig.height = 10}
+boxplot(house_data$price)
+boxplot(log(house_data$price))
+```
+
+### Waterfront
+```{r, fig.width = 20, fig.height = 10}
+plt_waterfront <- ggplot(data = house_data, aes(x = factor(waterfront), 
+                                         y = price)) + 
+  geom_boxplot() +
+  geom_hline(yintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +1
+  xlab('') +
+  ylab('Price (US$)') +
+  scale_x_discrete(labels = c('Not on Waterfront', 
+                              'On Waterfront')) +
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000'))
+plt_waterfront
+
+```
+
+### View
+```{r, fig.width = 20, fig.height = 10}
+plt_view <- ggplot(data = house_data, aes(x = factor(view), 
+                                          y = price)) + 
+  geom_boxplot() +
+  geom_hline(yintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  xlab('View Rating') +
+  ylab('Price (US$)') +
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000'))
+plt_view
+```
+
+### Grade
+```{r, fig.width = 20, fig.height = 10}
+plt_grade <- ggplot(data = house_data, aes(x = factor(grade), 
+                                         y = price)) + 
+  geom_boxplot() +
+  geom_hline(yintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  xlab('Grade') +
+  ylab('Price (US$)') +
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000'))
+plt_grade
+```
+
+```{r, fig.width = 20, fig.height = 10}
+# condition
+plt_condition <- ggplot(data = house_data, aes(x = factor(condition), 
+                                          y = price)) + 
+  geom_boxplot() + # makes a boxplot
+  geom_hline(yintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  # add line denoting mean house price
+  xlab('Condition') +
+  ylab('Price (US$)') + # change y axis label
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000'))
+plt_condition
+```
+
+## Map with prices
+```{r}
+# group prices
+price_group1 <- subset(house_data, subset = price < 250000)
+price_group2 <- subset(house_data, subset = price > 250000 & 
+                         price < 500000)
+price_group3 <- subset(house_data, subset = price > 500000 & 
+                         price < 750000)
+price_group4 <- subset(house_data, subset = price > 750000 & 
+                         price < 1000000)
+price_group5 <- subset(house_data, subset = price > 1000000)
+legend_order <- c('', ' ', '  ', '   ', '    ')
+legend_labels <- c('78,000 - 250,000', '250,000 - 500,000', 
+                  '500,000 - 750,000', '750,000 - 1,000,000', 
+                  '1,000,000 - 7,700,000')
+
+pal <- colorFactor(palette = c('lawngreen', 'mediumseagreen', 
+                               'deepskyblue', 'blue', 'navy'),
+                   levels = legend_order)
+leaflet(options = leafletOptions(minZoom = 9, dragging = T)) %>% 
+  addProviderTiles(provider = 'CartoDB')%>%
+  addCircleMarkers(data = price_group1, radius = 1, opacity = 0.75,
+                   popup = ~paste0('<b>', 'Price: $', price, '</b>', 
+                                   '<br/>', 'House area (sqft): ', sqft_living, 
+                                   '<br/>', 'Lot area (sqft): ', sqft_lot),
+                   color = 'lawngreen',  group = legend_labels[1]) %>%
+  addCircleMarkers(data = price_group2, radius = 1, opacity = 0.75,
+                   popup = ~paste0('<b>', 'Price: $', price, '</b>', 
+                                   '<br/>', 'House area (sqft): ', sqft_living, 
+                                   '<br/>', 'Lot area (sqft): ', sqft_lot),
+                   color = 'mediumseagreen',  group = legend_labels[2]) %>%
+  addCircleMarkers(data = price_group3, radius = 1, opacity = 0.75,
+                   popup = ~paste0('<b>', 'Price: $', price, '</b>', 
+                                   '<br/>', 'House area (sqft): ', sqft_living, 
+                                   '<br/>', 'Lot area (sqft): ', sqft_lot),
+                   color = 'deepskyblue',  group = legend_labels[3]) %>%
+  addCircleMarkers(data = price_group4, radius = 1, opacity = 0.75,
+                   popup = ~paste0('<b>', 'Price: $', price, '</b>', 
+                                   '<br/>', 'House area (sqft): ', sqft_living, 
+                                   '<br/>', 'Lot area (sqft): ', sqft_lot),
+                   color = 'blue',  group = legend_labels[4]) %>%
+  addCircleMarkers(data = price_group5, radius = 1, opacity = 0.75,
+                   popup = ~paste0('<b>', 'Price: $', price, '</b>', 
+                                   '<br/>', 'House area (sqft): ', sqft_living, 
+                                   '<br/>', 'Lot area (sqft): ', sqft_lot),
+                   color = 'navy',  group = legend_labels[5]) %>%
+  setView(lng = -122.25, lat = 47.4, zoom = 9) %>%
+  addLegend(pal = pal, values = legend_order,
+            labFormat = labelFormat(paste(values = legend_labels)),
+            opacity = 0.75, title = 'Price Range ($)', 
+            position = 'bottomleft') %>%
+
+  addLayersControl(overlayGroups = legend_labels, 
+                   position = 'bottomright')
+```
+
+## Correlation
+
+### Correlation plot
+```{r}
+res <- cor(house_data[,3:21])
+round(res, 2)
+res
+```
+
+```{r}
+library(corrplot)
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+```
+
+
+### Heat Map
+```{r}
+col<- colorRampPalette(c("blue", "white", "red"))(20)
+heatmap(x = res, col = col, symm = TRUE)
+```
+
+# Simple Regression without Variable Transformation
+
+Removed Variables: 'id', 'date' and 'zipcode'
+
+```{r}
+# Removed Variables: 'id', 'date' and 'zipcode' will be removed.
+house_data_lm = house_data[-1][-1][-15]
+
+#Fitting a linear regression model
+lm.fit = lm(price ~.,data = house_data_lm)
+summary(lm.fit)
+```
+
+We can see that that the variables 'floors' and 'sqft_basement' are statistically insignificant because their p-value is very high. So, we will have to remove them. 
+
+```{r}
+#Fitting a linear regression model again
+lmfit2 <- lm(price~bedrooms+bathrooms+sqft_living+sqft_lot+waterfront+view+condition+grade+sqft_above+yr_built+yr_renovated+lat+long+sqft_living15+sqft_lot15, data = house_data_lm)
+summary(lmfit2)
+```
+Although the variables in the second model are significant, the R-squared is unchanged. This means that there is multi-collinearity in the model.
+
+```{r}
+library(car)
+vif(lmfit2)
+```
+Based on the multicollinearity values, we can tell that 'sqft_living' and 'sqft_above' exceed the cutoff value of 5. So, we will drop them from our model.
+
+```{r}
+#Fitting a linear regression model again
+lmfit3 <- lm(price~bedrooms+bathrooms+sqft_living+waterfront+view+condition+grade+yr_built+yr_renovated+lat+long+sqft_lot15, data = house_data_lm)
+summary(lmfit3)
+```
+
+```{r}
+vif(lmfit3)
+```
+Although multicollinearity is removed, the R squared hasn't increased by a lot. Hence, a simpler model like regression might not be suitable for the data.
+
+# Model based on Zip Codes
+
+It is intuitive that different zip codes would have significantly varying starting prices. Therefore we decide to filter out data that only had the same zip code. The goal was to use the zipcode with the most number of occurrences since that means more data to work with. 
+
+```{r}
+#Getting the frequencies of each unique zipcode
+library(plyr)
+zips <- plyr::count(house_data, c("zipcode"))
+zips
+```
+```{r}
+max(zips["freq"])
+dplyr::filter(zips, freq == 602)
+```
+
+We see that the zip code '98103' occurs the most in the dataset. We fit a regression model based on this.
+
+```{r}
+onezip <- dplyr::filter(house_data, zipcode == 98103)
+lm.zip <- lm(price~.,data = onezip)
+summary(lm.zip)
+```
+
+This approach shows that a zip code is a very powerful way of predicting the price of a house in the locality.
+
+# Variable Transformation
+Log-Transformed Variables: 'price' ,'sqft_living', 'sqft_lot', 'sqft_above', 'sqft_basement', 'sqft_living15' and 'sqft_lot15'
+
+Removed Variables: 'id', 'date' and 'zipcode'
+
+```{r}
+# Removed Variables: 'id', 'date' and 'zipcode' will be removed.
+house_data_used = house_data[-1][-1][-15]
+
+# Log-Transformed Variables: 'price' ,'sqft_living', 'sqft_lot', 'sqft_above', 'sqft_basement', 'sqft_living15' and 'sqft_lot15'
+house_data_used$price = log(house_data_used$price)
+house_data_used$sqft_living = log(house_data_used$sqft_living)
+house_data_used$sqft_lot = log(house_data_used$sqft_lot)
+house_data_used$sqft_above = log(house_data_used$sqft_above)
+house_data_used$sqft_basement = log(house_data_used$sqft_basement + 1)
+house_data_used$sqft_living15 = log(house_data_used$sqft_living15)
+house_data_used$sqft_lot15 = log(house_data_used$sqft_lot15)
+```
+
+#Model Building
+
+```{r}
+# create a matrix to track model stats
+
+#MSE of models
+compare_models = matrix(NA, 15, 1, 
+                     dimnames = list(c('Best subset selection (Lowest)',
+                                       'Best subset selection (1 S.E.)',
+                                       'Forward stepwise selection (Lowest)',
+                                       'Forward stepwise selection (1 S.E.)',
+                                       'Backward stepwise selection (Lowest)',
+                                       'Backward stepwise selection (1 S.E.)',
+                                       'Ridge regression (Lowest)',
+                                       'Ridge regression (1 S.E.)',
+                                       'Lasso regression (Lowest)',
+                                       'Lasso regression (1 S.E.)', 'PCR', 
+                                       'PLS', 'Single regression tree', 
+                                       'Bagging', 'Random forest'),
+                                     c('Test MSE')))
+```
+
+## Regression 
+
+### Best Subset
+
+k-fold with 10 folds
+```{r, echo = TRUE}
+k <- 10 
+set.seed(93)
+folds <- sample(1:k, nrow(house_data_used), replace = T)
+cross_val_errors <- matrix(NA, k, 17, dimnames = list(NULL, paste(1:17)))
+
+predict.regsubsets <- function(object, newdata, id, ...){
+  form = as.formula(object$call[[2]])
+  mat = model.matrix(form, newdata)
+  coefi = coef(object, id = id)
+  xvars = names(coefi)
+  mat[,xvars] %*% coefi
+}
+
+for(j in 1:k){
+  best_ss_cv <- regsubsets(price ~ ., house_data_used[folds != j,], nvmax = 17)
+  for(i in 1:17){
+    predictions_bss = predict(best_ss_cv, house_data_used[folds == j,], id = i)
+    cross_val_errors[j, i] = mean(
+      (house_data_used$price[folds == j] - predictions_bss)^2)
+  }
+}
+
+
+cross_val_errors_mean = apply(cross_val_errors, 2, mean)
+which.min(cross_val_errors_mean)
+```
+16 variables chosen as best model
+
+
+```{r}
+cross_val_errors_mean = data.frame(cross_val_errors_mean)
+cross_val_errors_mean$se = ((apply(cross_val_errors, 2, sd)) / 
+                                 (sqrt(10)))
+cross_val_errors_mean$se = unlist(cross_val_errors_mean$se)
+
+plt_best_subset <- ggplot(data = cross_val_errors_mean,
+                      aes(x = c(seq(1, 17)), y = cross_val_errors_mean)) +
+  geom_point() +
+  geom_line() + 
+  geom_errorbar(aes(ymin = cross_val_errors_mean - se,
+                    ymax = cross_val_errors_mean + se)) + 
+
+  geom_hline(yintercept = 0.06397989, linetype = 2,
+             colour = 'red') +
+  xlab('Model Size') +
+  ylab('Test MSE') +
+  scale_y_continuous(limit = c(0.05, 0.15))
+plt_best_subset
+```
+
+Model with 13 variables is within 1 standard error, so choose simpler model of 13 varibales
+
+```{r}
+
+full_best_subset = regsubsets(price ~ ., house_data_used, nvmax = 17)
+coef(full_best_subset, 13)
+summary_full_best_subset = summary(full_best_subset)
+
+adjr_best_subset = data.frame(summary_full_best_subset$adjr2)
+adjr_best_subset$summary_full_best_subset.adjr2 = 
+  unlist(adjr_best_subset$summary_full_best_subset.adjr2)
+
+plt_adjr_best_subset <- ggplot(data = adjr_best_subset,
+                           aes(x = c(seq(1, 17)), 
+                               y = adjr_best_subset$summary_full_best_subset.adjr2)) +
+  geom_point() +
+  geom_line() +
+  geom_hline(yintercept = 0.7715858, 
+             linetype = 2, colour = 'red') +
+  xlab('Model Size') +
+  ylab('Adjusted R-Squared') +
+  scale_y_continuous(limit = c(0.4, 0.8))
+plt_adjr_best_subset
+```
+
+```{r}
+# put test MSE in matrix
+compare_models['Best subset selection (1 S.E.)', 
+            'Test MSE'] = cross_val_errors_mean$cross_val_errors_mean[13]
+compare_models['Best subset selection (Lowest)', 
+            'Test MSE'] = cross_val_errors_mean$cross_val_errors_mean[16]
+```
+
+### Forward Stepwise Selection
+
+```{r, echo = TRUE}
+k = 10
+set.seed(93)
+folds = sample(1:k, nrow(house_data_used), replace = T)
+forward_cross_val_err = matrix(NA, k, 17, dimnames = list(NULL, paste(1:17)))
+
+for(j in 1:k){
+  forward_subset = regsubsets(price ~ ., house_data_used[folds != j,], nvmax = 17,
+                         method = 'forward')
+  for(i in 1:17){
+    predictions_fwd = predict(forward_subset, house_data_used[folds == j,], id = i)
+    forward_cross_val_err[j, i] = mean(
+      (house_data_used$price[folds == j] - predictions_fwd)^2)
+  }
+}
+
+mean_forward_cross_val_err = apply(forward_cross_val_err, 2, mean)
+which.min(mean_forward_cross_val_err)
+```
+
+Best model is again 16 variables
+
+```{r}
+mean_forward_cross_val_err = data.frame(mean_forward_cross_val_err)
+mean_forward_cross_val_err$se = ((apply(forward_cross_val_err, 2, sd)) / 
+                                 (sqrt(10)))
+mean_forward_cross_val_err$se = unlist(mean_forward_cross_val_err$se)
+
+plt_forward <- ggplot(data = mean_forward_cross_val_err,
+                      aes(x = c(seq(1, 17)), y = mean_forward_cross_val_err)) +
+  geom_point() + 
+  geom_line() +
+  geom_errorbar(aes(ymin = mean_forward_cross_val_err - se,
+                    ymax = mean_forward_cross_val_err + se)) + 
+  geom_hline(yintercept = 0.06397989, linetype = 2,
+             colour = 'red') + 
+  xlab('Model Size') +
+  ylab('Test MSE') +
+  scale_y_continuous(limit = c(0.05, 0.15))
+plt_forward
+```
+
+Model with 12 variables is within 1 standard error, so choose simpler model of 12 
+
+```{r}
+forward_subset_full = regsubsets(price ~ ., house_data_used, nvmax = 17,
+                            method = 'forward')
+coef(forward_subset_full, 12)
+summary_forward_subset_full = summary(forward_subset_full)
+
+adjr_forward = data.frame(summary_forward_subset_full$adjr2)
+adjr_forward$summary_forward_subset_full.adjr2 = 
+  unlist(adjr_forward$summary_forward_subset_full.adjr2)
+
+plt_adjr_forward <- ggplot(data = adjr_forward,
+                          aes(x = c(seq(1, 17)), 
+                              y = adjr_forward$summary_forward_subset_full.adjr2)) +
+  geom_point() +
+  geom_line() +
+  geom_hline(yintercept = 0.7715858, 
+             linetype = 2, colour = 'red') + 
+  xlab('Model Size') + 
+  ylab('Adjusted R-Squared') + 
+  scale_y_continuous(limit = c(0.4, 0.8)) 
+plt_adjr_forward
+```
+
+```{r}
+# put test MSE in matrix
+compare_models['Forward stepwise selection (1 S.E.)', 
+            'Test MSE'] = mean_forward_cross_val_err$mean_forward_cross_val_err[12]
+compare_models['Forward stepwise selection (Lowest)', 
+            'Test MSE'] = mean_forward_cross_val_err$mean_forward_cross_val_err[16]
+
+```
+
+### Backward Stepwise Selection
+```{r}
+k = 10
+set.seed(93)
+folds = sample(1:k, nrow(house_data_used), replace = T)
+backward_cross_val_err = matrix(NA, k, 17, dimnames = list(NULL, paste(1:17)))
+
+for(j in 1:k){
+  bwd_ss_cv = regsubsets(price ~ ., house_data_used[folds != j,], nvmax = 17,
+                         method = 'backward')
+  for(i in 1:17){
+    predictions_bwd = predict(bwd_ss_cv, house_data_used[folds == j,], id = i)
+    backward_cross_val_err[j, i] = mean(
+      (house_data_used$price[folds == j] - predictions_bwd)^2)
+  }
+}
+
+mean_backward_cross_val_err = apply(backward_cross_val_err, 2, mean)
+
+mean_backward_cross_val_err = data.frame(mean_backward_cross_val_err)
+mean_backward_cross_val_err$se = ((apply(backward_cross_val_err, 2, sd)) / 
+                                 (sqrt(10)))
+mean_backward_cross_val_err$se = unlist(mean_backward_cross_val_err$se)
+
+plt_backward <- ggplot(data = mean_backward_cross_val_err,
+                      aes(x = c(seq(1, 17)), y = mean_backward_cross_val_err)) +
+  geom_point() + 
+  geom_line() + 
+  geom_errorbar(aes(ymin = mean_backward_cross_val_err - se,
+                    ymax = mean_backward_cross_val_err + se)) + 
+
+  geom_hline(yintercept = 0.06397989, linetype = 2,
+             colour = 'red') +
+  xlab('Model Size') + 
+  ylab('Test MSE') +
+  scale_y_continuous(limit = c(0, 0.15)) 
+
+backward_subset = regsubsets(price ~ ., house_data_used, nvmax = 17,
+                            method = 'backward')
+coef(backward_subset, 12)
+summary_backward_subset = summary(backward_subset)
+
+
+adjr_backward = data.frame(summary_backward_subset$adjr2)
+adjr_backward$summary_backward_subset.adjr2 = 
+  unlist(adjr_backward$summary_backward_subset.adjr2)
+
+plot_adjr_backward <- ggplot(data = adjr_backward,
+                          aes(x = c(seq(1, 17)), 
+                              y = adjr_backward$summary_backward_subset.adjr2)) +
+  geom_point() +
+  geom_line() + 
+  geom_hline(yintercept = 0.7715858, 
+             linetype = 2, colour = 'red') + 
+  xlab('Model Size') + 
+  ylab('Adjusted R-Squared') + 
+  scale_y_continuous(limit = c(0.4, 0.8)) 
+plot_adjr_backward
+
+round(adjr_best_subset$summary_full_best_subset.adjr2, digits = 2)
+
+compare_models['Backward stepwise selection (1 S.E.)', 
+            'Test MSE'] = mean_backward_cross_val_err$mean_backward_cross_val_err[12]
+compare_models['Backward stepwise selection (Lowest)', 
+            'Test MSE'] = mean_backward_cross_val_err$mean_backward_cross_val_err[16]
+```
+
+### Ridge Regression
+
+```{r, echo = TRUE}
+x = model.matrix(price ~ ., house_data_used)[, -1]
+y = house_data_used$price
+
+grid = 10^seq(10, -2, length = 100)
+ridge = glmnet(x, y, alpha = 0, lambda = grid)
+
+set.seed(93)
+train = sample(c(TRUE, FALSE), nrow(house_data_used), rep = TRUE)
+test = (!train)
+y.test = y[test]
+ridge_cross_val = cv.glmnet(x[train,], y[train], alpha = 0)
+plot(ridge_cross_val)
+```
+
+```{r}
+best_lambda_ridge = ridge_cross_val$lambda.min
+ridge_prediction = predict(ridge, s = best_lambda_ridge, 
+                           newx = x[test,])
+mean((ridge_prediction - y.test)^2)
+
+ridge_full = glmnet(x, y, alpha = 0)
+ridge_full_coef = predict(ridge_full, type = 'coefficients', 
+                          s = best_lambda_ridge)
+
+best_lambda_se_ridge = ridge_cross_val$lambda.1se
+
+ridge_prediction_se = predict(ridge, s = best_lambda_se_ridge, 
+                              newx = x[test,])
+mean((ridge_prediction_se - y.test)^2)
+
+compare_models['Ridge regression (Lowest)', 
+            'Test MSE'] = mean((ridge_prediction - y.test)^2)
+compare_models['Ridge regression (1 S.E.)', 
+            'Test MSE'] = mean((ridge_prediction_se - y.test)^2)
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+### Lasso Regression
+```{r, echo = TRUE}
+lasso = glmnet(x[train,], y[train], alpha = 1, lambda = grid) 
+
+set.seed(93)
+lasso_cross_val = cv.glmnet(x[train,], y[train], alpha = 1)
+best_lambda_lasso = lasso_cross_val$lambda.min
+plot(lasso_cross_val)
+```
+
+
+```{r}
+lasso_prediction = predict(lasso, s = best_lambda_lasso, 
+                           newx = x[test,])
+mean((lasso_prediction - y.test)^2)
+
+lasso_full = glmnet(x, y, alpha = 1, lambda = grid)
+lasso_full_coef = predict(lasso_full, type = 'coefficients', 
+                          s = best_lambda_lasso)
+
+
+best_lambda_se_lasso = lasso_cross_val$lambda.1se
+
+lasso_prediction_se = predict(lasso, s = best_lambda_se_lasso, 
+                              newx = x[test,])
+mean((lasso_prediction_se - y.test)^2)
+
+compare_models['Lasso regression (Lowest)', 
+            'Test MSE'] = mean((lasso_prediction - y.test)^2)
+compare_models['Lasso regression (1 S.E.)', 
+            'Test MSE'] = mean((lasso_prediction_se - y.test)^2)
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+### Principle Component Regression (PCR)
+```{r}
+set.seed(93)
+pcr_house = pcr(price ~ ., data = house_data_used, subset = train, scale = T,
+                validation = 'CV')
+
+validationplot(pcr_house, val.type = 'MSEP')
+pcr_house$validation$adj
+```
+
+
+```{r}
+compare_models['PCR', 'Test MSE'] = 
+  (mean((predict(pcr_house, x[test,], ncomp = 7) - y.test)^2))
+```
+
+### Partial Least Squares
+
+```{r, echo = T}
+set.seed(93)
+pls_house = plsr(price ~ ., data = house_data_used, subset = train, scale = T,
+               validation = 'CV')
+
+validationplot(pls_house, val.type = 'MSEP')
+pls_house$validation$adj
+```
+
+```{r}
+compare_models['PLS', 'Test MSE'] = 
+  (mean((predict(pls_house, x[test,], ncomp = 4) - y.test)^2))
+```
+
+
+```{r}
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+## Tree Based
+
+### Regression Tree
+
+```{r, echo = TRUE}
+tree_house = tree(price ~ ., house_data_used, subset = train)
+summary(tree_house)
+```
+
+
+```{r}
+plot(tree_house)
+text(tree_house, pretty = 0)
+
+
+tree_plot = rpart(price ~ ., house_data_used, subset = train)
+
+tree_plot = snip.rpart(tree_plot, toss = c(7))
+
+rpart.plot(tree_plot, digits = 4, type = 5)
+
+```
+
+```{r}
+cv_tree_house = cv.tree(tree_house)
+plot(cv_tree_house$size, cv_tree_house$dev, type = 'b')
+```
+
+
+```{r}
+yhat_tree_house = predict(tree_house, newdata = house_data_used[test,])
+house_test = house_data_used[test, 'price']
+mean((yhat_tree_house - house_test)^2)
+
+compare_models['Single regression tree', 'Test MSE'] = '?'
+
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+### Boostrap Aggregation (Bagging)
+
+```{r, echo = TRUE}
+set.seed(93)
+bag_house = randomForest(price ~ ., data = house_data_used, subset = train, 
+                         mtry = 17, importance = T)
+bag_house
+```
+
+```{r}
+yhat_bag = predict(bag_house, newdata = house_data_used[test,])
+mean((yhat_bag - house_test)^2)
+
+compare_models['Bagging', 'Test MSE'] = 0.03264798
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+### Random Forest
+
+```{r}
+set.seed(93)
+rf_house = randomForest(price ~ ., data = house_data_used, subset = train,
+                        importance = T)
+
+varImpPlot(rf_house)
+randomForest::importance(rf_house)
+rf_house
+```
+
+
+```{r}
+# won't let me calculate so just copied and pasted it from output
+           
+#yhat_rf = predict(rf_house, newdata = house_data_used[test,])
+#yhat_rf = as.numeric(yhat_rf)
+#mean((yhat_rf - house_test)^2)
+      
+# put test MSE in matrix
+compare_models['Random forest', 'Test MSE'] = 0.03328806
+
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+# Conclusion
+
+
