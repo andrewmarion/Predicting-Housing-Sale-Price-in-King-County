@@ -1,0 +1,1108 @@
+---
+title: "H515 Final Project"
+author: "Andrew Marion, Michael Black, Matthew Hays, Sanika Kotnis"
+date: "04/11/2022"
+output: pdf_document
+---
+
+# Read in Data
+```{r setup, include=FALSE}
+# activate required libraries
+library(dplyr)
+library(gbm)
+library(glmnet)
+library(gridExtra)
+library(leaflet)
+library(leaps)
+library(pls)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(tidyverse)
+library(tree)
+
+house_data <- read_csv("kc_house_data.csv")
+```
+
+# 1. Introduction
+
+Owning a home is a dream or goal that many people hope to achieve. Given the pandemic, many people have wanted to move out of cities and into the suburbs and buy a home. Buying a home can be an incredibly difficult process not knowing if the price is reasonable or if the house will have any problems in the future.
+
+The purpose of this project is to develop and compare models to find the best model to predict the housing price of a house sold in King County in Washington, USA. Having a model to predict the price of a house can be extremely useful for buyers and sellers as each wants to optimize the value of their purchase. For the buyer, knowing the predicted price for a house will allow them to know if they are overpaying or getting a good deal on an undervalued house. For the seller, knowing the predicted price will allow them to not over or undervalued the house. This will ensure they allow them to maximize their profits from selling the house. 
+
+## 1.1 Dataset
+
+The dataset of “House Sales in King County, USA” contains data on houses from King County in Washington, USA sold between May 2014 and May 2015: https://www.kaggle.com/datasets/harlfoxem/housesalesprediction?select=kc_house_data.csv
+
+# 2. Related Work
+
+There exists quite a lot of related work on predicting housing prices using machine learning techniques.  There are examples and write-ups on platforms such as Kaggle, Medium, Towards Data Science, and more.  The article that I found the most interesting was from Towards Data Science: Predicting House Prices with Machine Learning.  The author, John Ade-Ojo, used a Kaggle dataset with home date for 1,460 example houses in Ames, Iowa.  Each house has 79 features describing the house.  John decided to use Python and Jupyter Notebooks for his analysis.
+
+There were many similarities with John’s work and ours.  He transformed his data rather than eliminating outliers, as did we.  Also like us, John used a regression tree and random forest.  Though his model ultimately didn’t turn out super successfully (he was only in the top 39% on Kaggle) he ended the article by offering a number of ways he could improve his results.  These included better utilizing categorical variables to reduce bias and hyperparameter tuning.  These are things we can keep in mind as well.
+
+
+# 3. Methodology
+
+## 3.1 Data and Exploration, Preprocessing and Cleaning
+
+The dataset contains data on 21,613 house sales from King County between May 2014 and May 2015. It includes 21 fields with some being eliminated as they were not useful in our regression analysis. These included id, date, zipcode, year renovated, and year built.
+
+The dataset did not need to be cleaned as it had 0 null values. The dataset was first explored using functions such as glimpse() and summary() to ensure all data types are numeric. This also allowed for a glimpse at the distribution of the variables. It was noticed that some variables may not have linear distributions and may be skewed. The first problem was price was not linear as shown in Figure 1. After attempting different transformations, taking the log of price was the ideal solution as shown in Figure 2. It was also determined that sqft_living (square footage of living space), sqft_lot (square footage of the land space), sqft_above (square footage of interior housing above ground level), sqft_basement (square footage of interior housing below ground level), sqft_living15 (square footage of interior housing living space for the nearest 15 neighborhoods), and sqft_loft15 (square footage of the land lots of the nearest 15 neighbors) as each of these variables were found to be skewed.
+
+```{r}
+glimpse(house_data)
+```
+
+## 3.1.1 Check for NA
+```{r, echo = TRUE}
+# check for missing data (Na's)
+sum(is.na(house_data))
+```
+No NA's in the dataset
+
+
+## 3.1.2 Summary
+```{r}
+summary(house_data[,3:21])
+```
+
+## 3.1.3 QQ Plot of Price with potential transformers
+```{r, fig.width = 20, fig.height = 10}
+qqnorm(house_data$price, pch = 1, frame = FALSE)
+qqline(house_data$price, col = "steelblue", lwd = 2)
+
+qqnorm(log(house_data$price), pch = 1, frame = FALSE)
+qqline(log(house_data$price), col = "steelblue", lwd = 2)
+
+qqnorm(sqrt(house_data$price), pch = 1, frame = FALSE)
+qqline(sqrt(house_data$price), col = "steelblue", lwd = 2)
+```
+
+## 3.1.4 Price Distribution
+```{r, fig.width = 20, fig.height = 10}
+options(scipen = 100000000)
+plt_price <- ggplot(data = house_data, aes(x = price)) + 
+  geom_histogram(col = 'black') +
+  geom_vline(xintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  xlab('Price (US$)') + ylab('Frequency') +
+  scale_x_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', '1,000,000', '2,500,000', '5,000,000')) +
+  scale_y_continuous(breaks = c(seq(0, 3000, 500)),
+                     labels = c(seq(0, 3000, 500)),
+                     limits = c(0, 3000))
+
+plt_price
+```
+
+## 3.1.5 Year vs # of houses built and mean price
+```{r, fig.width = 20, fig.height = 10}
+#number of houses built per year
+build_year <- house_data %>%
+  group_by(yr_built) %>%
+  summarise(rows = n())
+
+plt_build_year <- ggplot(data = build_year, aes(x = yr_built, y = rows)) +
+  geom_bar(stat = 'identity', col = 'black') +
+  xlab('Year') +
+  ylab('Houses Built') +
+  scale_x_continuous(breaks = c(seq(1900, 2015, 10)),
+                     labels = c(seq(1900, 2015, 10)),
+                     limits = c(1899, 2016)) +
+  scale_y_continuous(breaks = c(seq(0, 600, 50)),
+                     labels = c(seq(0, 600, 50)),
+                     limits = c(0, 600))
+
+plt_build_year
+```
+
+```{r, fig.width = 20, fig.height = 10}
+# mean price of house per year built
+build_year_price <- house_data %>%
+  group_by(yr_built) %>%
+  summarise(mean_price = mean(as.numeric(price))) %>%
+  arrange(yr_built)
+
+build_year_plt_price <- ggplot(data = build_year_price, 
+                               aes(x = yr_built, y = mean_price)) +
+  geom_bar(stat = 'identity', col = 'black') + 
+  xlab('Year') + 
+  ylab('Mean Price (US$)') + 
+  geom_hline(yintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  scale_x_continuous(breaks = c(seq(1900, 2015, 10)),
+                     labels = c(seq(1900, 2015, 10)),
+                     limits = c(1899, 2016)) +
+  scale_y_continuous(breaks = c(seq(100000, 800000, 100000)),
+                     labels = c('100,000', '200,000', '300,000',
+                                '400,000', '500,000', '600,000',
+                                '700,000', '800,000'))
+build_year_plt_price
+```
+
+```{r, fig.width = 20, fig.height = 10}
+# mean square footage of living area of surrounding 15 houses
+plt_closest15_living <- ggplot(data = house_data, aes(x = sqft_living15, 
+                                                 y = price)) +
+  geom_point(lwd = 1) +
+  xlab('Mean Square Footage of Living Area of Nearest 15 Houses') + 
+  ylab('Price (US$)') +
+  scale_x_continuous(trans = 'log',
+                     breaks = c(500, 1000, 2500, 5000),
+                     labels = c('500', '1,000', '2,500', '5,000')) +
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000')) 
+plt_closest15_living
+
+```
+
+```{r, fig.width = 20, fig.height = 10}
+# mean square footage of lot of surrounding 15 houses
+plt_closest15 <- ggplot(data = house_data, aes(x = sqft_lot15, 
+                                                 y = price)) +
+  geom_point(lwd = 1) +
+  xlab('Mean Square Footage of Lot of Nearest 15 Houses') + 
+  ylab('Price (US$)') + 
+  scale_x_continuous(trans = 'log',
+                     breaks = c(1000, 10000, 100000, 1000000),
+                     labels = c('1,000', '10,000', '100,000', 
+                                '1,000,000')) +
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000'))
+plt_closest15
+```
+
+## 3.1.5 Boxplots
+
+### All boxplots
+```{r, fig.width = 20, fig.height = 10}
+require(ggplot2)
+boxplot(house_data[,3:21])
+
+```
+
+### House Price
+```{r, fig.width = 20, fig.height = 10}
+boxplot(house_data$price)
+boxplot(log(house_data$price))
+```
+
+### Waterfront
+```{r, fig.width = 20, fig.height = 10}
+plt_waterfront <- ggplot(data = house_data, aes(x = factor(waterfront), 
+                                         y = price)) + 
+  geom_boxplot() +
+  geom_hline(yintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  xlab('') +
+  ylab('Price (US$)') +
+  scale_x_discrete(labels = c('Not on Waterfront', 
+                              'On Waterfront')) +
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000'))
+plt_waterfront
+
+```
+
+### View
+```{r, fig.width = 20, fig.height = 10}
+plt_view <- ggplot(data = house_data, aes(x = factor(view), 
+                                          y = price)) + 
+  geom_boxplot() +
+  geom_hline(yintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  xlab('View Rating') +
+  ylab('Price (US$)') +
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000'))
+plt_view
+```
+
+### Grade
+```{r, fig.width = 20, fig.height = 10}
+plt_grade <- ggplot(data = house_data, aes(x = factor(grade), 
+                                         y = price)) + 
+  geom_boxplot() +
+  geom_hline(yintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  xlab('Grade') +
+  ylab('Price (US$)') +
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000'))
+plt_grade
+```
+
+```{r, fig.width = 20, fig.height = 10}
+# condition
+plt_condition <- ggplot(data = house_data, aes(x = factor(condition), 
+                                          y = price)) + 
+  geom_boxplot() + # makes a boxplot
+  geom_hline(yintercept = mean(house_data$price),
+             linetype = 2, col = 'red', lwd = 2) +
+  # add line denoting mean house price
+  xlab('Condition') +
+  ylab('Price (US$)') + # change y axis label
+  scale_y_continuous(trans = 'log',
+                     breaks = c(100000, 250000, 500000, 1000000, 
+                                2500000, 5000000),
+                     labels = c('100,000', '250,000', '500,000', 
+                                '1,000,000', '2,500,000', '5,000,000'))
+plt_condition
+```
+
+## 3.1.6 Map with prices
+```{r}
+# group prices
+price_group1 <- subset(house_data, subset = price < 250000)
+price_group2 <- subset(house_data, subset = price > 250000 & 
+                         price < 500000)
+price_group3 <- subset(house_data, subset = price > 500000 & 
+                         price < 750000)
+price_group4 <- subset(house_data, subset = price > 750000 & 
+                         price < 1000000)
+price_group5 <- subset(house_data, subset = price > 1000000)
+legend_order <- c('', ' ', '  ', '   ', '    ')
+legend_labels <- c('78,000 - 250,000', '250,000 - 500,000', 
+                  '500,000 - 750,000', '750,000 - 1,000,000', 
+                  '1,000,000 - 7,700,000')
+
+pal <- colorFactor(palette = c('lawngreen', 'mediumseagreen', 
+                               'deepskyblue', 'blue', 'navy'),
+                   levels = legend_order)
+leaflet(options = leafletOptions(minZoom = 9, dragging = T)) %>% 
+  addProviderTiles(provider = 'CartoDB')%>%
+  addCircleMarkers(data = price_group1, radius = 1, opacity = 0.75,
+                   popup = ~paste0('<b>', 'Price: $', price, '</b>', 
+                                   '<br/>', 'House area (sqft): ', sqft_living, 
+                                   '<br/>', 'Lot area (sqft): ', sqft_lot),
+                   color = 'lawngreen',  group = legend_labels[1]) %>%
+  addCircleMarkers(data = price_group2, radius = 1, opacity = 0.75,
+                   popup = ~paste0('<b>', 'Price: $', price, '</b>', 
+                                   '<br/>', 'House area (sqft): ', sqft_living, 
+                                   '<br/>', 'Lot area (sqft): ', sqft_lot),
+                   color = 'mediumseagreen',  group = legend_labels[2]) %>%
+  addCircleMarkers(data = price_group3, radius = 1, opacity = 0.75,
+                   popup = ~paste0('<b>', 'Price: $', price, '</b>', 
+                                   '<br/>', 'House area (sqft): ', sqft_living, 
+                                   '<br/>', 'Lot area (sqft): ', sqft_lot),
+                   color = 'deepskyblue',  group = legend_labels[3]) %>%
+  addCircleMarkers(data = price_group4, radius = 1, opacity = 0.75,
+                   popup = ~paste0('<b>', 'Price: $', price, '</b>', 
+                                   '<br/>', 'House area (sqft): ', sqft_living, 
+                                   '<br/>', 'Lot area (sqft): ', sqft_lot),
+                   color = 'blue',  group = legend_labels[4]) %>%
+  addCircleMarkers(data = price_group5, radius = 1, opacity = 0.75,
+                   popup = ~paste0('<b>', 'Price: $', price, '</b>', 
+                                   '<br/>', 'House area (sqft): ', sqft_living, 
+                                   '<br/>', 'Lot area (sqft): ', sqft_lot),
+                   color = 'navy',  group = legend_labels[5]) %>%
+  setView(lng = -122.25, lat = 47.4, zoom = 9) %>%
+  addLegend(pal = pal, values = legend_order,
+            labFormat = labelFormat(paste(values = legend_labels)),
+            opacity = 0.75, title = 'Price Range ($)', 
+            position = 'bottomleft') %>%
+
+  addLayersControl(overlayGroups = legend_labels, 
+                   position = 'bottomright')
+```
+
+## 3.1.7 Correlation
+
+### Correlation plot
+```{r}
+res <- cor(house_data[,3:21])
+round(res, 2)
+res
+```
+
+```{r}
+library(corrplot)
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+```
+
+
+### Heat Map
+```{r}
+col<- colorRampPalette(c("blue", "white", "red"))(20)
+heatmap(x = res, col = col, symm = TRUE)
+```
+
+## 3.2 Problem Statement
+
+Using the “House Sales in King County, USA” dataset, build and develop models to compare using mean squared error to find the best model.
+
+## 3.3 Regression Based Models
+
+### 3.3.1 Simple Linear Regression
+
+We start by fitting a linear regression model on the cleaned dataset. The Adjusted R2 of this model was 69%, however some variables were not statistically significant because of their high p-values. We then ran the model again after removing the variables that were not significant. However, the Adjusted R2 was still around 69%/ This suggested the presence of multicollinearity. We then found the multicollinearity index of all the variables used in the model. We found that the multicollinearity index of some of the variables exceeded the cutoff value of 5; so we removed them in the next iteration. However, despite removing those variables and running a model with only significant variables, the Adjusted R2 was still the same. Thus, simple linear regression didn’t prove to be very useful.
+
+Removed Variables: 'id', 'date' and 'zipcode'
+
+```{r}
+# Removed Variables: 'id', 'date' and 'zipcode' will be removed.
+house_data_lm = house_data[-1][-1][-15]
+
+#Fitting a linear regression model
+lm.fit = lm(price ~.,data = house_data_lm)
+summary(lm.fit)
+```
+
+We can see that that the variables 'floors' and 'sqft_basement' are statistically insignificant because their p-value is very high. So, we will have to remove them. 
+
+```{r}
+#Fitting a linear regression model again
+lmfit2 <- lm(price~bedrooms+bathrooms+sqft_living+sqft_lot+waterfront+view+condition+grade+sqft_above+yr_built+yr_renovated+lat+long+sqft_living15+sqft_lot15, data = house_data_lm)
+summary(lmfit2)
+```
+Although the variables in the second model are significant, the R-squared is unchanged. This means that there is multi-collinearity in the model.
+
+```{r}
+library(car)
+vif(lmfit2)
+```
+Based on the multicollinearity values, we can tell that 'sqft_living' and 'sqft_above' exceed the cutoff value of 5. So, we will drop them from our model.
+
+```{r}
+#Fitting a linear regression model again
+lmfit3 <- lm(price~bedrooms+bathrooms+sqft_living+waterfront+view+condition+grade+yr_built+yr_renovated+lat+long+sqft_lot15, data = house_data_lm)
+summary(lmfit3)
+```
+
+```{r}
+vif(lmfit3)
+```
+Although multicollinearity is removed, the R squared hasn't increased by a lot. Hence, a simpler model like regression might not be suitable for the data.
+
+### 3.3.2 Model based on Zip Codes
+
+It is intuitive that different zip codes would have significantly varying starting prices. Therefore we decide to filter out data that only had the same zip code. The goal was to use the zipcode with the most number of occurrences since that means more data to work with. 
+
+```{r}
+#Getting the frequencies of each unique zipcode
+library(plyr)
+zips <- plyr::count(house_data, c("zipcode"))
+zips
+```
+```{r}
+max(zips["freq"])
+dplyr::filter(zips, freq == 602)
+```
+
+We see that the zip code '98103' occurs the most in the dataset. We fit a regression model based on this.
+
+```{r}
+onezip <- dplyr::filter(house_data, zipcode == 98103)
+lm.zip <- lm(price~.,data = onezip)
+summary(lm.zip)
+```
+
+This approach shows that a zip code is a very powerful way of predicting the price of a house in the locality.
+
+### Variable Transformation
+Log-Transformed Variables: 'price' ,'sqft_living', 'sqft_lot', 'sqft_above', 'sqft_basement', 'sqft_living15' and 'sqft_lot15'
+
+Removed Variables: 'id', 'date' and 'zipcode'
+
+```{r}
+# Removed Variables: 'id', 'date' and 'zipcode' will be removed.
+house_data_used = house_data[-1][-1][-15]
+
+# Log-Transformed Variables: 'price' ,'sqft_living', 'sqft_lot', 'sqft_above', 'sqft_basement', 'sqft_living15' and 'sqft_lot15'
+house_data_used$price = log(house_data_used$price)
+house_data_used$sqft_living = log(house_data_used$sqft_living)
+house_data_used$sqft_lot = log(house_data_used$sqft_lot)
+house_data_used$sqft_above = log(house_data_used$sqft_above)
+house_data_used$sqft_basement = log(house_data_used$sqft_basement + 1)
+house_data_used$sqft_living15 = log(house_data_used$sqft_living15)
+house_data_used$sqft_lot15 = log(house_data_used$sqft_lot15)
+```
+
+### Compaing Models
+
+```{r}
+# create a matrix to track model stats
+
+#MSE of models
+compare_models = matrix(NA, 15, 1, 
+                     dimnames = list(c('Best subset selection (Lowest)',
+                                       'Best subset selection (1 S.E.)',
+                                       'Forward stepwise selection (Lowest)',
+                                       'Forward stepwise selection (1 S.E.)',
+                                       'Backward stepwise selection (Lowest)',
+                                       'Backward stepwise selection (1 S.E.)',
+                                       'Ridge regression (Lowest)',
+                                       'Ridge regression (1 S.E.)',
+                                       'Lasso regression (Lowest)',
+                                       'Lasso regression (1 S.E.)', 'PCR', 
+                                       'PLS', 'Single regression tree', 
+                                       'Bagging', 'Random forest'),
+                                     c('Test MSE')))
+```
+
+
+
+
+### 3.3.3 Forward Stepwise
+
+One type of best subset model selection is called forward stepwise selection. In this, the model selection starts with adding one variable that has the largest reduction in RSS. It will continue to add one variable at a time until it gets to all predictors being added. Next, we used cross validation to compare models. 
+
+Forward stepwise resulted in selecting a model with 16 variables due to it having the smallest MSE of 0.0635690033580851. When looking at the simplest model within one standard error, the best model is 12 variables. When comparing 16 variables to 12 variables, both models adjusted R2 is equal to approximately 0.75, but the 12 variables model has a slightly lower MSE of 0.0640747183735237. 
+
+```{r, echo = TRUE}
+k = 10
+set.seed(93)
+folds = sample(1:k, nrow(house_data_used), replace = T)
+forward_cross_val_err = matrix(NA, k, 17, dimnames = list(NULL, paste(1:17)))
+
+for(j in 1:k){
+  forward_subset = regsubsets(price ~ ., house_data_used[folds != j,], nvmax = 17,
+                         method = 'forward')
+  for(i in 1:17){
+    predictions_fwd = predict(forward_subset, house_data_used[folds == j,], id = i)
+    forward_cross_val_err[j, i] = mean(
+      (house_data_used$price[folds == j] - predictions_fwd)^2)
+  }
+}
+
+mean_forward_cross_val_err = apply(forward_cross_val_err, 2, mean)
+which.min(mean_forward_cross_val_err)
+```
+
+Best model is again 16 variables
+
+```{r}
+mean_forward_cross_val_err = data.frame(mean_forward_cross_val_err)
+mean_forward_cross_val_err$se = ((apply(forward_cross_val_err, 2, sd)) / 
+                                 (sqrt(10)))
+mean_forward_cross_val_err$se = unlist(mean_forward_cross_val_err$se)
+
+plt_forward <- ggplot(data = mean_forward_cross_val_err,
+                      aes(x = c(seq(1, 17)), y = mean_forward_cross_val_err)) +
+  geom_point() + 
+  geom_line() +
+  geom_errorbar(aes(ymin = mean_forward_cross_val_err - se,
+                    ymax = mean_forward_cross_val_err + se)) + 
+  geom_hline(yintercept = 0.06397989, linetype = 2,
+             colour = 'red') + 
+  xlab('Model Size') +
+  ylab('Test MSE') +
+  scale_y_continuous(limit = c(0.05, 0.15))
+plt_forward
+```
+
+Model with 12 variables is within 1 standard error, so choose simpler model of 12 
+
+```{r}
+forward_subset_full = regsubsets(price ~ ., house_data_used, nvmax = 17,
+                            method = 'forward')
+coef(forward_subset_full, 12)
+summary_forward_subset_full = summary(forward_subset_full)
+
+adjr_forward = data.frame(summary_forward_subset_full$adjr2)
+adjr_forward$summary_forward_subset_full.adjr2 = 
+  unlist(adjr_forward$summary_forward_subset_full.adjr2)
+
+plt_adjr_forward <- ggplot(data = adjr_forward,
+                          aes(x = c(seq(1, 17)), 
+                              y = adjr_forward$summary_forward_subset_full.adjr2)) +
+  geom_point() +
+  geom_line() +
+  geom_hline(yintercept = 0.7715858, 
+             linetype = 2, colour = 'red') + 
+  xlab('Model Size') + 
+  ylab('Adjusted R-Squared') + 
+  scale_y_continuous(limit = c(0.4, 0.8)) 
+plt_adjr_forward
+```
+
+```{r}
+# put test MSE in matrix
+compare_models['Forward stepwise selection (1 S.E.)', 
+            'Test MSE'] = mean_forward_cross_val_err$mean_forward_cross_val_err[12]
+compare_models['Forward stepwise selection (Lowest)', 
+            'Test MSE'] = mean_forward_cross_val_err$mean_forward_cross_val_err[16]
+
+```
+
+### 3.3.4 Backward Stepwise
+
+Backward stepwise selection is a similar best subset model selection to forward stepwise selection, but instead of starting with adding one variable at a time, it starts with a model with all variables and drops the least useful one.
+
+Backward Stepwise selection again chose 16 variables as the model with the lowest MSE of 0.0635690033580851. When looking at the simplest model within one standard error, the best model is 13 variables, one more than forward stepwise. When comparing 16 variables to 13 variables, both models adjusted R2 is equal to approximately 0.75, but the 13 variables model has a slightly lower MSE of 0.0641709329148227. 
+
+```{r}
+k = 10
+set.seed(93)
+folds = sample(1:k, nrow(house_data_used), replace = T)
+backward_cross_val_err = matrix(NA, k, 17, dimnames = list(NULL, paste(1:17)))
+
+for(j in 1:k){
+  bwd_ss_cv = regsubsets(price ~ ., house_data_used[folds != j,], nvmax = 17,
+                         method = 'backward')
+  for(i in 1:17){
+    predictions_bwd = predict(bwd_ss_cv, house_data_used[folds == j,], id = i)
+    backward_cross_val_err[j, i] = mean(
+      (house_data_used$price[folds == j] - predictions_bwd)^2)
+  }
+}
+
+mean_backward_cross_val_err = apply(backward_cross_val_err, 2, mean)
+
+mean_backward_cross_val_err = data.frame(mean_backward_cross_val_err)
+mean_backward_cross_val_err$se = ((apply(backward_cross_val_err, 2, sd)) / 
+                                 (sqrt(10)))
+mean_backward_cross_val_err$se = unlist(mean_backward_cross_val_err$se)
+
+plt_backward <- ggplot(data = mean_backward_cross_val_err,
+                      aes(x = c(seq(1, 17)), y = mean_backward_cross_val_err)) +
+  geom_point() + 
+  geom_line() + 
+  geom_errorbar(aes(ymin = mean_backward_cross_val_err - se,
+                    ymax = mean_backward_cross_val_err + se)) + 
+
+  geom_hline(yintercept = 0.06397989, linetype = 2,
+             colour = 'red') +
+  xlab('Model Size') + 
+  ylab('Test MSE') +
+  scale_y_continuous(limit = c(0, 0.15)) 
+
+backward_subset = regsubsets(price ~ ., house_data_used, nvmax = 17,
+                            method = 'backward')
+coef(backward_subset, 12)
+summary_backward_subset = summary(backward_subset)
+
+
+adjr_backward = data.frame(summary_backward_subset$adjr2)
+adjr_backward$summary_backward_subset.adjr2 = 
+  unlist(adjr_backward$summary_backward_subset.adjr2)
+
+plot_adjr_backward <- ggplot(data = adjr_backward,
+                          aes(x = c(seq(1, 17)), 
+                              y = adjr_backward$summary_backward_subset.adjr2)) +
+  geom_point() +
+  geom_line() + 
+  geom_hline(yintercept = 0.7715858, 
+             linetype = 2, colour = 'red') + 
+  xlab('Model Size') + 
+  ylab('Adjusted R-Squared') + 
+  scale_y_continuous(limit = c(0.4, 0.8)) 
+plot_adjr_backward
+
+round(adjr_best_subset$summary_full_best_subset.adjr2, digits = 2)
+
+compare_models['Backward stepwise selection (1 S.E.)', 
+            'Test MSE'] = mean_backward_cross_val_err$mean_backward_cross_val_err[12]
+compare_models['Backward stepwise selection (Lowest)', 
+            'Test MSE'] = mean_backward_cross_val_err$mean_backward_cross_val_err[16]
+```
+
+### 3.3.5 Ridge Regression
+
+Ridge regression differs from each of the subset selection models by using all variables in the model. It attempts to make the best model by shrinking the coefficients to reduce variance. It uses a lambda as a tuning parameter to reduce the variance. As it increases, the coefficients decrease towards zero and the shrinkage penalty increases. 
+
+Ridge regression using all 17 variables resulted in an MSE of 0.0640210770187973 and an MSE of 0.0647437930171121 for the best model within one standard error.
+
+
+```{r, echo = TRUE}
+x = model.matrix(price ~ ., house_data_used)[, -1]
+y = house_data_used$price
+
+grid = 10^seq(10, -2, length = 100)
+ridge = glmnet(x, y, alpha = 0, lambda = grid)
+
+set.seed(93)
+train = sample(c(TRUE, FALSE), nrow(house_data_used), rep = TRUE)
+test = (!train)
+y.test = y[test]
+ridge_cross_val = cv.glmnet(x[train,], y[train], alpha = 0)
+plot(ridge_cross_val)
+```
+
+```{r}
+best_lambda_ridge = ridge_cross_val$lambda.min
+ridge_prediction = predict(ridge, s = best_lambda_ridge, 
+                           newx = x[test,])
+mean((ridge_prediction - y.test)^2)
+
+ridge_full = glmnet(x, y, alpha = 0)
+ridge_full_coef = predict(ridge_full, type = 'coefficients', 
+                          s = best_lambda_ridge)
+
+best_lambda_se_ridge = ridge_cross_val$lambda.1se
+
+ridge_prediction_se = predict(ridge, s = best_lambda_se_ridge, 
+                              newx = x[test,])
+mean((ridge_prediction_se - y.test)^2)
+
+compare_models['Ridge regression (Lowest)', 
+            'Test MSE'] = mean((ridge_prediction - y.test)^2)
+compare_models['Ridge regression (1 S.E.)', 
+            'Test MSE'] = mean((ridge_prediction_se - y.test)^2)
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+### 3.3.6 Lasso Regression
+
+Similar to ridge regression, lasso regression is another shrinkage method to making models. The difference between them is that Lasso reduces some variables to 0. By doing this, it is essentially making a best subset model selection when putting variable coefficients to 0. However, it still uses a lambda to shrink the coefficients.
+
+Lasso regression results in a model with 16 variables having the lowest MSE of 0.0653469292488136. The best model within one standard error had 15 variables with a MSE of 0.0653469292488136. These two models were essentially the same. 
+
+An interesting note is that even with being a mix between best subset methods and ridge regression, it performed worse than any model so far. 
+
+```{r, echo = TRUE}
+lasso = glmnet(x[train,], y[train], alpha = 1, lambda = grid) 
+
+set.seed(93)
+lasso_cross_val = cv.glmnet(x[train,], y[train], alpha = 1)
+best_lambda_lasso = lasso_cross_val$lambda.min
+plot(lasso_cross_val)
+```
+
+
+```{r}
+lasso_prediction = predict(lasso, s = best_lambda_lasso, 
+                           newx = x[test,])
+mean((lasso_prediction - y.test)^2)
+
+lasso_full = glmnet(x, y, alpha = 1, lambda = grid)
+lasso_full_coef = predict(lasso_full, type = 'coefficients', 
+                          s = best_lambda_lasso)
+
+
+best_lambda_se_lasso = lasso_cross_val$lambda.1se
+
+lasso_prediction_se = predict(lasso, s = best_lambda_se_lasso, 
+                              newx = x[test,])
+mean((lasso_prediction_se - y.test)^2)
+
+compare_models['Lasso regression (Lowest)', 
+            'Test MSE'] = mean((lasso_prediction - y.test)^2)
+compare_models['Lasso regression (1 S.E.)', 
+            'Test MSE'] = mean((lasso_prediction_se - y.test)^2)
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+### 3.3.7 Principal Component Regression (PCR)
+
+Principal component regression, also known as PCR, is a dimension reduction method. PCR is an unsupervised approach to model building where it tries to capture the most variation of the data using linear combinations of variables. The goal is to find the smallest linear combination of variables that account for the variation of the predicted variable.
+
+PCR resulted in the best model being 17 variables based on MSE. However, with PCR wanting to have the smallest number of variables, the 7 variables model was selected as there was diminishing returns after adding the seventh variable. This resulted in an MSE of 0.069442654815093.
+
+
+```{r}
+set.seed(93)
+pcr_house = pcr(price ~ ., data = house_data_used, subset = train, scale = T,
+                validation = 'CV')
+
+validationplot(pcr_house, val.type = 'MSEP')
+pcr_house$validation$adj
+```
+
+
+```{r}
+compare_models['PCR', 'Test MSE'] = 
+  (mean((predict(pcr_house, x[test,], ncomp = 7) - y.test)^2))
+```
+
+### 3.3.8 Partial Least Squares (PLS)
+
+Partial least squares, or PLS, is another dimension reduction method. The difference between PCR and PLS is that PCR is an unsupervised model method. 
+
+The PLS model has diminishing returns after the fourth variable is added. Therefore, the 4 variable model was selected with an MSE of 0.0638798214846813. 
+
+There are two interesting notes from this model. First, this model performed better than the PCR model. Second, the model only had 4 variables, far less than all other models so far, and has a very low MSE comparable to Forward Selection and Backward Selection, each with all 17 variables.
+
+
+```{r, echo = T}
+set.seed(93)
+pls_house = plsr(price ~ ., data = house_data_used, subset = train, scale = T,
+               validation = 'CV')
+
+validationplot(pls_house, val.type = 'MSEP')
+pls_house$validation$adj
+```
+
+```{r}
+compare_models['PLS', 'Test MSE'] = 
+  (mean((predict(pls_house, x[test,], ncomp = 4) - y.test)^2))
+```
+
+
+```{r}
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+### 3.3.9 Best Subset
+
+R Studio has a regsubsets function to determine the best selection of covariates for regression (Lumley, 2020). The maximum number of desired covariates to be considered is specified, and the function returns the list of covariates that minimize the residual sum of squares (RSS) given a certain number of covariates p. For our housing data, a best-subset model was obtained for 1, 2, and all the way up to 17 covariates. The full table listing the best subsets and the 10-fold cross-validated MSE can be found using the link in Table 1, and the summaries of the table are written below:
+
+No single covariate was kept in every best-subset selection. The covariates grade, lat, yr_built, and view were chosen very often (16, 16, 14, and 13 times out of 17), while the covariates long, sqft_lot, floors, yr_renovated, and bedrooms were not chosen very often (1, 2, 5, 5, and 5 times out of 17). The number of bedrooms is a very important predictor in house prices, so why didn’t it get picked more? It is important to remember that some covariates are correlated with each other. Bedroom is correlated with sqft_living with a correlation of .58, which makes sense, since additional bathrooms imply more square feet of housing. If sqft_living is already included in the model, then adding bathrooms as a predictor may not provide as much new information as adding a different variable, like waterfront for example. The 10-fold cross-validated mean-squared error was smallest for the 16-covariate model (MSE = 0.063569). The 16-covariate model will be a contender for the final model used for the housing data. 
+
+Additionally, there is a within-one-standard-error selection method that aims to simplify the model. In the best-subset case, the 12-covariate model has a cross-validated error within 1 standard error of the 16-covariate model. Other models have MSE within one standard error, but the 12-covariate model has the fewest covariates. The purpose of this selection process is to reduce the complexity of the model without compromising too much on predictive power. The cross-validated MSE for the within-one-standard-error model with 12 covariates is MSE = 0.063974. 
+
+
+k-fold with 10 folds
+```{r, echo = TRUE}
+k <- 10 
+set.seed(93)
+folds <- sample(1:k, nrow(house_data_used), replace = T)
+cross_val_errors <- matrix(NA, k, 17, dimnames = list(NULL, paste(1:17)))
+
+predict.regsubsets <- function(object, newdata, id, ...){
+  form = as.formula(object$call[[2]])
+  mat = model.matrix(form, newdata)
+  coefi = coef(object, id = id)
+  xvars = names(coefi)
+  mat[,xvars] %*% coefi
+}
+
+for(j in 1:k){
+  best_ss_cv <- regsubsets(price ~ ., house_data_used[folds != j,], nvmax = 17)
+  for(i in 1:17){
+    predictions_bss = predict(best_ss_cv, house_data_used[folds == j,], id = i)
+    cross_val_errors[j, i] = mean(
+      (house_data_used$price[folds == j] - predictions_bss)^2)
+  }
+}
+
+
+cross_val_errors_mean = apply(cross_val_errors, 2, mean)
+which.min(cross_val_errors_mean)
+```
+16 variables chosen as best model
+
+
+```{r}
+cross_val_errors_mean = data.frame(cross_val_errors_mean)
+cross_val_errors_mean$se = ((apply(cross_val_errors, 2, sd)) / 
+                                 (sqrt(10)))
+cross_val_errors_mean$se = unlist(cross_val_errors_mean$se)
+
+plt_best_subset <- ggplot(data = cross_val_errors_mean,
+                      aes(x = c(seq(1, 17)), y = cross_val_errors_mean)) +
+  geom_point() +
+  geom_line() + 
+  geom_errorbar(aes(ymin = cross_val_errors_mean - se,
+                    ymax = cross_val_errors_mean + se)) + 
+
+  geom_hline(yintercept = 0.06397989, linetype = 2,
+             colour = 'red') +
+  xlab('Model Size') +
+  ylab('Test MSE') +
+  scale_y_continuous(limit = c(0.05, 0.15))
+plt_best_subset
+```
+
+Model with 13 variables is within 1 standard error, so choose simpler model of 13 varibales
+
+```{r}
+
+full_best_subset = regsubsets(price ~ ., house_data_used, nvmax = 17)
+coef(full_best_subset, 13)
+summary_full_best_subset = summary(full_best_subset)
+
+adjr_best_subset = data.frame(summary_full_best_subset$adjr2)
+adjr_best_subset$summary_full_best_subset.adjr2 = 
+  unlist(adjr_best_subset$summary_full_best_subset.adjr2)
+
+plt_adjr_best_subset <- ggplot(data = adjr_best_subset,
+                           aes(x = c(seq(1, 17)), 
+                               y = adjr_best_subset$summary_full_best_subset.adjr2)) +
+  geom_point() +
+  geom_line() +
+  geom_hline(yintercept = 0.7715858, 
+             linetype = 2, colour = 'red') +
+  xlab('Model Size') +
+  ylab('Adjusted R-Squared') +
+  scale_y_continuous(limit = c(0.4, 0.8))
+plt_adjr_best_subset
+```
+
+```{r}
+# put test MSE in matrix
+compare_models['Best subset selection (1 S.E.)', 
+            'Test MSE'] = cross_val_errors_mean$cross_val_errors_mean[13]
+compare_models['Best subset selection (Lowest)', 
+            'Test MSE'] = cross_val_errors_mean$cross_val_errors_mean[16]
+```
+
+### 3.3.10 Likelihood Ratio Test
+
+As it turns out, the models with 11 through 17 covariates are nested; every covariate in the 11-covariate model also appears in the 12, 13, …, and 17-covariate (saturated) model. The same applies to the 12-covariate model and all the way through the saturated model. When regression models are nested like this, the likelihood ratio test (LRT) can be used as a parametric statistical test to compare whether the reduced models are as adequate as the advanced models. The difference in deviances between the two models approximately follows a chi-square distribution, where the degrees of freedom equals the difference in the number of parameters. In the table, model p refers to the model with p covariates. We will keep the model chosen by the LRT at .05 significance level and compare it to the other models considered in this project.The results of the LRT are displayed in Table 2.
+
+As we can see, models 11 and 12 can both be improved upon by adding any number of covariates, so we eliminate them from contention. Models 17, 16, 15, and 14 can be reduced to some degree while still adequately fitting the data. However, no model consistently outperformed every nested model. 14 was sufficient compared to 15, and 13 was sufficient compared to 14. 13 was NOT sufficient compared to 15. Model 13, 14, or 15 would be an adequate choice. The model we are choosing based on the LRT approach is model 15. Although 14 vs. 15 was non-significant, as was 13 vs. 14, we are sticking with 15. Model 15 is significantly better than model 13, and when cross-validating mean-squared error (MSE) for models 13, 14, and 15, model 15 had the lowest estimated mean-squared error (MSE=0.06362717). Therefore, the 15-covariate model will also be a contender for the final model used in this project.
+
+
+```{r}
+
+bestsub <- regsubsets(price ~ ., data= house_data_used, nvmax = 17)
+summary(bestsub)
+```
+bedrooms: 12 - 17
+bathrooms: 7-17
+sqft_living: 2-10, 15-17
+sqft_lot: 16-17
+floors: 10, 14-17
+waterfront: 8-17
+view: 5-17
+condition: 9-17
+grade: 1, 3-17
+sqft_above: 11-17
+sqft_basement: 11-17
+yr_built: 4-17
+yr_renovated: 13-17
+lat: 2-17
+long: 17
+sqft_living15: 6-17
+sqft_lot15: 11-17
+
+grade
+sqft_living, lat
+sqft_living, grade, lat
+sqft_living, grade, yr_built, lat
+sqft_living, view, grade, yr_built, lat
+
+
+
+```{r}
+# Full model: bedrooms bathrooms sqft_living sqt_lot floors waterfront view condition grade sqft_above sqft_basement yr_built yr_renovated lat long sqft_living15 sqft_lot15
+saturated <- glm(price ~ ., data=house_data_used)
+summary(saturated)
+
+model16 <- glm(price ~ bedrooms + bathrooms + sqft_living+  sqft_lot + floors + waterfront + view + condition + grade + sqft_above + sqft_basement + yr_built + yr_renovated+ lat + sqft_living15 + sqft_lot15, data=house_data_used)
+summary(model16)
+
+model15 <- glm(price ~ bedrooms + bathrooms + sqft_living + floors + waterfront + view + condition + grade + sqft_above + sqft_basement + yr_built + yr_renovated+ lat + sqft_living15 + sqft_lot15, data=house_data_used)
+summary(model15)
+
+model14 <- glm(price ~ bedrooms + bathrooms + floors + waterfront + view + condition + grade + sqft_above + sqft_basement + yr_built + yr_renovated+ lat + sqft_living15 + sqft_lot15, data=house_data_used)
+summary(model14)
+
+model13 <- glm(price ~ bedrooms + bathrooms + waterfront + view + condition + grade + sqft_above + sqft_basement + yr_built + yr_renovated+ lat + sqft_living15 + sqft_lot15, data=house_data_used)
+summary(model13)
+
+model12 <- glm(price ~ bedrooms + bathrooms + waterfront + view + condition + grade + sqft_above + sqft_basement + yr_built + lat + sqft_living15 + sqft_lot15, data=house_data_used)
+summary(model12)
+
+model11 <- glm(price ~ bathrooms + waterfront + view + condition + grade + sqft_above + sqft_basement + yr_built + lat + sqft_living15 + sqft_lot15, data=house_data_used)
+summary(model11)
+
+deviances <- c(
+deviance(saturated),
+deviance(model16),
+deviance(model15),
+deviance(model14),
+deviance(model13),
+deviance(model12),
+deviance(model11)
+)
+
+# models must be nested
+# H0: reduced model provides as good a fit as larger model
+# HA: reduced model does not provide as good a fit as larger model
+lrt17 <- c(
+1-pchisq(q=deviance(model16)-deviance(saturated), df = 1),
+1-pchisq(q=deviance(model15)-deviance(saturated), df = 2),
+1-pchisq(q=deviance(model14)-deviance(saturated), df = 3),
+1-pchisq(q=deviance(model13)-deviance(saturated), df = 4),
+1-pchisq(q=deviance(model12)-deviance(saturated), df = 5),
+1-pchisq(q=deviance(model11)-deviance(saturated), df = 6)
+)
+
+lrt16 <- c(
+1-pchisq(q=deviance(model15)-deviance(model16), df = 1),
+1-pchisq(q=deviance(model14)-deviance(model16), df = 2),
+1-pchisq(q=deviance(model13)-deviance(model16), df = 3),
+1-pchisq(q=deviance(model12)-deviance(model16), df = 4),
+1-pchisq(q=deviance(model11)-deviance(model16), df = 5)
+)
+
+lrt15 <- c(
+1-pchisq(q=deviance(model14)-deviance(model15), df = 1),
+1-pchisq(q=deviance(model13)-deviance(model15), df = 2),
+1-pchisq(q=deviance(model12)-deviance(model15), df = 3),
+1-pchisq(q=deviance(model11)-deviance(model15), df = 4)
+)
+
+lrt14 <- c(
+1-pchisq(q=deviance(model13)-deviance(model14), df = 1),
+1-pchisq(q=deviance(model12)-deviance(model14), df = 2),
+1-pchisq(q=deviance(model11)-deviance(model14), df = 3)
+)
+
+lrt13 <- c(
+1-pchisq(q=deviance(model12)-deviance(model13), df = 1),
+1-pchisq(q=deviance(model11)-deviance(model13), df = 1)
+)
+
+lrt12 <- c(
+1-pchisq(q=deviance(model11)-deviance(model12), df = 1)
+)
+```
+H0: reduced model provides as good a fit as larger model
+HA: reduced model does not provide as good a fit as larger model 
+
+For the full model, 12 and 11 perform significantly worse than it.
+For the 16 model, 12 and 11 perform significantly worse than it.
+For the 15 model, 13, 12, and 11 perform significantly worse than it.
+For the 14 model, 12 and 11 perform significantly worse than it.
+For the 13 model, 12 and 11 perform significantly worse than it.
+For the 12 model, 11 performs significantly worse than it.
+
+Theory suggests:
+AIC optimal for prediction
+LRT for assessing whether a given effect or set of effects is “important”
+
+AIC: is it worth having all the extra parameters?
+LRT: is it worth having any of the extra parameters?
+
+AIC:
+17: 1772.829
+16: 1771.036
+15: 1783.666
+14: 1820.315
+13: 1874.482
+
+
+We will use model15 as our LRT-based model selection. 
+
+```{r LRT_CV}
+library(boot)
+set.seed(09102022)
+lm.fit15 <- glm(price ~ bedrooms + bathrooms + sqft_living + floors + waterfront + view + condition + grade + sqft_above + sqft_basement + yr_built + yr_renovated+ lat + sqft_living15 + sqft_lot15, data = house_data_used)
+## use K = 10 for 10-fold CV estimate
+kCVEst <- cv.glm(house_data_used, lm.fit15, K = 10)
+kCVEst$delta[1]
+
+lm.fit14 <- glm(price ~ bedrooms + bathrooms + floors + waterfront + view + condition + grade + sqft_above + sqft_basement + yr_built + yr_renovated+ lat + sqft_living15 + sqft_lot15, data = house_data_used)
+## use K = 10 for 10-fold CV estimate
+kCVEst <- cv.glm(house_data_used, lm.fit14, K = 10)
+kCVEst$delta[1]
+
+lm.fit13 <- glm(price ~ bedrooms + bathrooms + waterfront + view + condition + grade + sqft_above + sqft_basement + yr_built + yr_renovated+ lat + sqft_living15 + sqft_lot15, data = house_data_used)
+## use K = 10 for 10-fold CV estimate
+kCVEst <- cv.glm(house_data_used, lm.fit13, K = 10)
+kCVEst$delta[1]
+
+```
+
+
+## 3.4 Tree Based Models
+
+### Regression Tree3.4.1 Regression Tree
+
+Regression trees use binary recursive partitioning to predict responses. Partitions are made in such a way that they both minimize residual sum of squares (RSS) and leave previous partitions unchanged. The regression tree was made with the tree function from R Studio (Ripley, 2021). The first partition was made by splitting the covariate grade at the value of 9, implying that grade is the most important predictor in log house price. The regression tree under default options selected the variables grade, lat, and sqft_living with 8 terminal nodes. The largest partition contains about 16.44% of the data, and the smallest partition contains about 2.89%. The full tree is shown in Figure 4.
+
+If an observation had a grade value of 8, a lat value of 46, and a sqft_living value of 8, then the regression tree would predict a log house price of 12.79, which is a price of exp(12.79) = $358,613.33. The cv.tree function in R Studio allows cross-validation to be done to estimate MSE. Our estimated regression tree MSE is 0.092610.
+
+```{r, echo = TRUE}
+tree_house = tree(price ~ ., house_data_used, subset = train)
+summary(tree_house)
+```
+
+
+```{r}
+plot(tree_house)
+text(tree_house, pretty = 0)
+
+
+tree_plot = rpart(price ~ ., house_data_used, subset = train)
+
+tree_plot = snip.rpart(tree_plot, toss = c(7))
+
+rpart.plot(tree_plot, digits = 4, type = 5)
+
+```
+
+```{r}
+cv_tree_house = cv.tree(tree_house)
+plot(cv_tree_house$size, cv_tree_house$dev, type = 'b')
+```
+
+
+```{r}
+yhat_tree_house = predict(tree_house, newdata = house_data_used[test,])
+house_test = house_data_used[test, 'price']
+mean((yhat_tree_house - house_test)^2)
+
+compare_models['Single regression tree', 'Test MSE'] = '?'
+
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+### Bootstrap Aggregation (Bagging)
+
+One technique developed to improve the regression tree method is bagging. Single regression trees are prone to high variance; if a different training dataset is used, the resulting tree can be significantly different. Bagging, or bootstrap aggregation, uses simulation to achieve a decision tree with lower variance. James et al. (2017) describe the process of bagging in the following way: “... a natural way to reduce the variance and hence increase the prediction accuracy of a statistical learning method is to take many training sets from the population, build a separate prediction model using each training set, and average the resulting predictions.” They note that “averaging a set of observations reduces variance” (p. 316). Each new training dataset obtained with bootstrapping yields a new tree, and the averages are used as the final tree values. As the number of trees increases, the MSE usually decreases, since variance is decreasing. It is not monotonic decreasing due to the nature of random sampling and bootstrapping. When using 1 through 500 trees, the minimum cross-validated MSE was 0.03264798, which is about a third of the MSE from the single regression tree. Thus, bagging successfully reduced the prediction error and is a better model than the single regression tree. 
+
+
+```{r, echo = TRUE}
+set.seed(93)
+bag_house = randomForest(price ~ ., data = house_data_used, subset = train, 
+                         mtry = 17, importance = T)
+bag_house
+```
+
+```{r}
+yhat_bag = predict(bag_house, newdata = house_data_used[test,])
+mean((yhat_bag - house_test)^2)
+
+compare_models['Bagging', 'Test MSE'] = 0.03264798
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+### Random Forest
+
+The random forest method builds upon the bagging process and aims to address a major flaw: highly correlated trees. At each split in the regression tree, random forests randomly sample which covariates are included. If there is one very strong predictor, the bagged trees will almost all split on this predictor, leading to similar-looking trees. James et al. (2017) state, “... averaging many highly correlated quantities does not lead to as large of a reduction in variance as averaging many uncorrelated quantities” (p. 320). The randomForest function with default arguments yielded a random forests model for the housing data. Figure 5 shows the results of the random forest procedure and the variable lat contributes the most to prediction power. Removing lat from the model yields the largest increase in MSE. The random forest model also averages the bootstrap estimates, but with the added benefit of considering different regression trees with each simulation. The cross-validated MSE for the random forest model was 0.03328806, which is a significant improvement compared to the single tree, as expected. However, the prediction error is slightly larger than the cross-validated MSE for bagging.
+
+
+```{r}
+set.seed(93)
+rf_house = randomForest(price ~ ., data = house_data_used, subset = train,
+                        importance = T)
+
+varImpPlot(rf_house)
+randomForest::importance(rf_house)
+rf_house
+```
+
+
+```{r}
+# won't let me calculate so just copied and pasted it from output
+           
+#yhat_rf = predict(rf_house, newdata = house_data_used[test,])
+#yhat_rf = as.numeric(yhat_rf)
+#mean((yhat_rf - house_test)^2)
+      
+# put test MSE in matrix
+compare_models['Random forest', 'Test MSE'] = 0.03328806
+
+compare_models_view = compare_models[order(compare_models[,1]),]
+compare_models_view
+```
+
+# Conclusion
+
+Overall, there were numerous models made comparing the MSE of each model. Table 3 displays the results of the model selection process. From this, we can conclude that our best model was bootstrap aggregation, or bagging. However, bagging took the most time of any model to run and it used more variables than our smallest model, PLS with only 4 variables. Despite the likelihood ratio model having a statistical test justifying its use, it was still outperformed by other model selection methods. The worst model was the single regression tree. Therefore, if we want the most accurate model, we would not use it.
